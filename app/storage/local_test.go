@@ -447,7 +447,6 @@ func (e *errorReader) Read([]byte) (int, error) {
 	return 0, e.err
 }
 
-
 func TestLocalRunCleanup(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -555,6 +554,18 @@ func TestLocalStartCleanupStopsOnContextDone(t *testing.T) {
 	// The test itself passes if we reach here without panic.
 }
 
+func TestLocalStartCleanupZeroIntervalDoesNotPanic(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	l, err := NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	l.StartCleanup(ctx, time.Hour, 0)
+}
 
 func TestAccessTime(t *testing.T) {
 	t.Parallel()

@@ -40,6 +40,15 @@ type S3 struct {
 	prefix   string
 }
 
+type responseMetaReadCloser struct {
+	io.ReadCloser
+	meta HTTPResponseMeta
+}
+
+func (r responseMetaReadCloser) HTTPResponseMeta() HTTPResponseMeta {
+	return r.meta
+}
+
 // S3Options holds configuration for the S3 backend.
 type S3Options struct {
 	Bucket      string
@@ -173,8 +182,19 @@ func (s *S3) Get(ctx context.Context, key string) (rc io.ReadCloser, size int64,
 	if out.LastModified != nil {
 		mt = *out.LastModified
 	}
+	meta := HTTPResponseMeta{
+		StatusCode:    200,
+		ContentLength: sz,
+	}
+	if out.ContentRange != nil {
+		meta.StatusCode = 206
+		meta.ContentRange = *out.ContentRange
+	}
+	if out.AcceptRanges != nil {
+		meta.AcceptRanges = *out.AcceptRanges
+	}
 
-	return out.Body, sz, mt, true, nil
+	return responseMetaReadCloser{ReadCloser: out.Body, meta: meta}, sz, mt, true, nil
 }
 
 // Delete implements Backend.

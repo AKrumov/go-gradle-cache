@@ -43,6 +43,15 @@ func mockS3Server() *httptest.Server {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
+			if r.Header.Get("Range") == "bytes=1-3" {
+				w.Header().Set("Accept-Ranges", "bytes")
+				w.Header().Set("Content-Range", "bytes 1-3/5")
+				w.Header().Set("Content-Length", "3")
+				w.Header().Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
+				w.WriteHeader(http.StatusPartialContent)
+				w.Write([]byte("ell"))
+				return
+			}
 			w.Header().Set("Content-Length", "5")
 			w.Header().Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
 			w.WriteHeader(http.StatusOK)
@@ -177,6 +186,48 @@ func TestS3Get(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestS3GetRangeMetadata(t *testing.T) {
+	srv := mockS3Server()
+	defer srv.Close()
+
+	be, err := NewS3(context.Background(), S3Options{
+		Bucket:      "test-bucket",
+		Region:      "us-east-1",
+		Endpoint:    srv.URL,
+		Credentials: credentials.NewStaticCredentialsProvider("TEST", "TEST", ""),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rc, size, _, exists, err := be.Get(WithRange(context.Background(), "bytes=1-3"), "found")
+	if err != nil {
+		t.Fatalf("Get error: %v", err)
+	}
+	if !exists || size != 3 {
+		t.Fatalf("exists=%v size=%d", exists, size)
+	}
+	metaProvider, ok := rc.(HTTPResponseMetadata)
+	if !ok {
+		t.Fatal("expected range metadata on S3 response")
+	}
+	meta := metaProvider.HTTPResponseMeta()
+	if meta.StatusCode != http.StatusPartialContent {
+		t.Fatalf("status = %d, want %d", meta.StatusCode, http.StatusPartialContent)
+	}
+	if meta.ContentRange != "bytes 1-3/5" {
+		t.Fatalf("content-range = %q", meta.ContentRange)
+	}
+	if meta.AcceptRanges != "bytes" {
+		t.Fatalf("accept-ranges = %q", meta.AcceptRanges)
+	}
+	data, _ := io.ReadAll(rc)
+	rc.Close()
+	if string(data) != "ell" {
+		t.Fatalf("body = %q, want %q", string(data), "ell")
 	}
 }
 

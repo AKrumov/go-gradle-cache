@@ -25,10 +25,10 @@ type Hybrid struct {
 
 // HybridOptions holds configuration for the hybrid backend.
 type HybridOptions struct {
-	AsyncUpload     bool // if true, S3 uploads are done in background
-	AsyncQueueSize  int  // max pending async uploads
-	AsyncMaxRetry   int  // max retries for async uploads
-	AsyncWorkers    int  // number of background upload workers
+	AsyncUpload    bool // if true, S3 uploads are done in background
+	AsyncQueueSize int  // max pending async uploads
+	AsyncMaxRetry  int  // max retries for async uploads
+	AsyncWorkers   int  // number of background upload workers
 }
 
 // NewHybrid creates a new hybrid backend.
@@ -68,9 +68,15 @@ func (h *Hybrid) Get(ctx context.Context, key string) (rc io.ReadCloser, size in
 		return rc, size, modTime, exists, err
 	}
 
-	s3RC, s3Size, _, s3Exists, err := h.s3.Get(ctx, key)
+	s3RC, s3Size, s3ModTime, s3Exists, err := h.s3.Get(ctx, key)
 	if err != nil || !s3Exists {
 		return nil, 0, time.Time{}, false, err
+	}
+
+	// A ranged S3 response is only a fragment of the object, so writing it back
+	// locally would corrupt the full cache entry.
+	if getRange(ctx) != "" {
+		return s3RC, s3Size, s3ModTime, true, nil
 	}
 	defer s3RC.Close()
 
@@ -137,4 +143,3 @@ func (h *Hybrid) syncS3Upload(ctx context.Context, key string) error {
 	}
 	return nil
 }
-

@@ -18,13 +18,16 @@ type AsyncUploadItem struct {
 // This is used by the Hybrid backend to return 201 immediately after local
 // storage and upload to S3 in the background.
 type AsyncUploader struct {
-	backend Backend // the S3 backend
-	local   Backend // the local backend (to read from)
-	queue   chan AsyncUploadItem
-	wg      sync.WaitGroup
-	mu      sync.RWMutex
-	running bool
-	maxRetry int
+	backend    Backend // the S3 backend
+	local      Backend // the local backend (to read from)
+	queue      chan AsyncUploadItem
+	wg         sync.WaitGroup
+	retryWG    sync.WaitGroup
+	mu         sync.RWMutex
+	running    bool
+	maxRetry   int
+	stopCh     chan struct{}
+	retryDelay func(int) time.Duration
 }
 
 // NewAsyncUploader creates an async uploader with a bounded queue.
@@ -38,10 +41,12 @@ func NewAsyncUploader(s3Backend, localBackend Backend, queueSize int, maxRetry i
 		maxRetry = 3
 	}
 	return &AsyncUploader{
-		backend:  s3Backend,
-		local:    localBackend,
-		queue:    make(chan AsyncUploadItem, queueSize),
-		maxRetry: maxRetry,
+		backend:    s3Backend,
+		local:      localBackend,
+		queue:      make(chan AsyncUploadItem, queueSize),
+		maxRetry:   maxRetry,
+		stopCh:     make(chan struct{}),
+		retryDelay: func(attempt int) time.Duration { return time.Duration(attempt) * 2 * time.Second },
 	}
 }
 
@@ -73,25 +78,37 @@ func (a *AsyncUploader) Stop() {
 		return
 	}
 	a.running = false
+	close(a.stopCh)
 	a.mu.Unlock()
 
+	a.retryWG.Wait()
 	close(a.queue)
 	a.wg.Wait()
 }
 
 // Enqueue adds an item to the upload queue. Returns true if enqueued, false if dropped.
 func (a *AsyncUploader) Enqueue(key string, size int64) bool {
+	return a.enqueue(AsyncUploadItem{Key: key, Size: size})
+}
+
+func (a *AsyncUploader) enqueue(item AsyncUploadItem) bool {
 	a.mu.RLock()
-	running := a.running
-	a.mu.RUnlock()
-	if !running {
+	defer a.mu.RUnlock()
+	if !a.running {
 		return false
 	}
+
 	select {
-	case a.queue <- AsyncUploadItem{Key: key, Size: size}:
+	case <-a.stopCh:
+		return false
+	default:
+	}
+
+	select {
+	case a.queue <- item:
 		return true
 	default:
-		slog.Warn("async upload queue full, dropping item", "key", key)
+		slog.Warn("async upload queue full, dropping item", "key", item.Key)
 		return false
 	}
 }
@@ -115,20 +132,40 @@ func (a *AsyncUploader) upload(item AsyncUploadItem) {
 	if err := a.backend.Put(ctx, item.Key, localRC, localSize); err != nil {
 		item.Attempts++
 		if item.Attempts < a.maxRetry {
-			// Re-queue with exponential backoff (simplified: just retry later).
-			go func(it AsyncUploadItem) {
-				time.Sleep(time.Duration(it.Attempts) * 2 * time.Second)
-				// Try to re-enqueue; may drop if queue is full.
-				select {
-				case a.queue <- it:
-				default:
-					slog.Error("async upload retry dropped, queue full", "key", it.Key, "attempts", it.Attempts)
-				}
-			}(item)
+			a.scheduleRetry(item)
 		} else {
 			slog.Error("async upload failed after max retries", "key", item.Key, "error", err, "attempts", item.Attempts)
 		}
 		return
 	}
 	slog.Debug("async upload succeeded", "key", item.Key, "size", localSize)
+}
+
+func (a *AsyncUploader) scheduleRetry(item AsyncUploadItem) {
+	a.mu.RLock()
+	running := a.running
+	delayFn := a.retryDelay
+	stopCh := a.stopCh
+	a.mu.RUnlock()
+	if !running {
+		return
+	}
+
+	a.retryWG.Add(1)
+	go func(it AsyncUploadItem) {
+		defer a.retryWG.Done()
+
+		timer := time.NewTimer(delayFn(it.Attempts))
+		defer timer.Stop()
+
+		select {
+		case <-timer.C:
+		case <-stopCh:
+			return
+		}
+
+		if !a.enqueue(it) {
+			slog.Error("async upload retry dropped", "key", it.Key, "attempts", it.Attempts)
+		}
+	}(item)
 }

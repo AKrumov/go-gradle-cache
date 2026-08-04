@@ -7,6 +7,21 @@ import (
 	"time"
 )
 
+// HTTPResponseMeta carries backend-originated HTTP response details for
+// streaming responses that cannot be re-derived by the handler.
+type HTTPResponseMeta struct {
+	StatusCode    int
+	ContentLength int64
+	ContentRange  string
+	AcceptRanges  string
+}
+
+// HTTPResponseMetadata is implemented by ReadClosers that need the handler to
+// preserve backend-provided HTTP response semantics such as ranged GETs.
+type HTTPResponseMetadata interface {
+	HTTPResponseMeta() HTTPResponseMeta
+}
+
 // Backend defines the interface for cache storage implementations.
 type Backend interface {
 	// Head checks if an object exists and returns its size.

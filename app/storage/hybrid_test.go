@@ -261,6 +261,50 @@ func TestHybridGetBackfillsFromS3(t *testing.T) {
 	}
 }
 
+func TestHybridGetRangeBypassesBackfill(t *testing.T) {
+	t.Parallel()
+	ctx := WithRange(context.Background(), "bytes=1-3")
+
+	local := &spyBackend{
+		mockBackend: mockBackend{
+			getFunc: func(ctx context.Context, key string) (io.ReadCloser, int64, time.Time, bool, error) {
+				return nil, 0, time.Time{}, false, nil
+			},
+			putFunc: func(ctx context.Context, key string, r io.Reader, size int64) error {
+				t.Fatal("local backfill should not run for ranged requests")
+				return nil
+			},
+		},
+	}
+	s3 := &spyBackend{
+		mockBackend: mockBackend{
+			getFunc: func(ctx context.Context, key string) (io.ReadCloser, int64, time.Time, bool, error) {
+				return stringReadCloser("ell"), 3, time.Unix(3, 0), true, nil
+			},
+		},
+	}
+	h := NewHybrid(local, s3, HybridOptions{})
+
+	rc, size, modTime, exists, err := h.Get(ctx, "k")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !exists || size != 3 {
+		t.Fatalf("unexpected metadata: exists=%v size=%d", exists, size)
+	}
+	if modTime != time.Unix(3, 0) {
+		t.Fatalf("modTime = %v, want %v", modTime, time.Unix(3, 0))
+	}
+	data, _ := io.ReadAll(rc)
+	rc.Close()
+	if string(data) != "ell" {
+		t.Fatalf("got %q, want %q", string(data), "ell")
+	}
+	if len(local.putKeys) != 0 {
+		t.Fatalf("local Put keys = %v, want none", local.putKeys)
+	}
+}
+
 func TestHybridGetMissingEverywhere(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

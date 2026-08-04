@@ -37,7 +37,7 @@ helm upgrade --install go-http-cache-server oci://ghcr.io/akrumov/go-http-cache-
 | `config.s3Concurrency` | S3 upload concurrency | `0` |
 | `config.s3RetryMax` | Max retries for S3 operations | `3` |
 | `config.localTTL` | Local cache TTL, e.g. `7d` | `""` |
-| `config.localCleanupInterval` | Interval between cleanups, e.g. `24h` | `""` |
+| `config.localCleanupInterval` | Interval between cleanups, e.g. `24h`; must be positive when `config.localTTL` is enabled | `""` |
 | `config.maxUploadSize` | Max upload size per entry in bytes | `""` |
 
 ### Reliability & Performance Values

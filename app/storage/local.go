@@ -213,6 +213,14 @@ func (l *Local) Put(ctx context.Context, key string, r io.Reader, size int64) er
 // entries whose last access time is older than ttl. It runs immediately,
 // then every interval, and stops when ctx is canceled.
 func (l *Local) StartCleanup(ctx context.Context, ttl, interval time.Duration) {
+	if ttl <= 0 {
+		return
+	}
+	if interval <= 0 {
+		slog.Warn("local cleanup disabled because interval is not positive", "ttl", ttl, "interval", interval)
+		return
+	}
+
 	go func() {
 		l.runCleanup(ttl)
 

@@ -22,11 +22,99 @@ import (
 
 var errIncompleteAuthConfig = errors.New("both auth username and auth password are required when HTTP authentication is enabled")
 
+type daysDurationValue struct {
+	target *time.Duration
+}
+
+func (v daysDurationValue) String() string {
+	if v.target == nil {
+		return ""
+	}
+	if *v.target == 0 {
+		return "0"
+	}
+	return v.target.String()
+}
+
+func (v daysDurationValue) Set(s string) error {
+	d, err := parseDurationWithDays(s)
+	if err != nil {
+		return err
+	}
+	*v.target = d
+	return nil
+}
+
 func envOrDefault(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
 	return def
+}
+
+func parseEnvInt(name string, target *int) error {
+	v := os.Getenv(name)
+	if v == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fmt.Errorf("invalid %s: %w", name, err)
+	}
+	*target = n
+	return nil
+}
+
+func parseEnvInt64(name string, target *int64) error {
+	v := os.Getenv(name)
+	if v == "" {
+		return nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid %s: %w", name, err)
+	}
+	*target = n
+	return nil
+}
+
+func parseEnvFloat64(name string, target *float64) error {
+	v := os.Getenv(name)
+	if v == "" {
+		return nil
+	}
+	n, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return fmt.Errorf("invalid %s: %w", name, err)
+	}
+	*target = n
+	return nil
+}
+
+func parseEnvBool(name string, target *bool) error {
+	v := os.Getenv(name)
+	if v == "" {
+		return nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return fmt.Errorf("invalid %s: %w", name, err)
+	}
+	*target = b
+	return nil
+}
+
+func parseEnvDuration(name string, target *time.Duration) error {
+	v := os.Getenv(name)
+	if v == "" {
+		return nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return fmt.Errorf("invalid %s: %w", name, err)
+	}
+	*target = d
+	return nil
 }
 
 // parseDurationWithDays parses a duration string supporting Go durations
@@ -50,36 +138,36 @@ func run(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("go-http-cache-server", flag.ContinueOnError)
 
 	var (
-		showVersion          bool
-		listenAddr           string
-		debugListenAddr      string
-		storageType          string
-		cacheDir             string
-		s3Bucket             string
-		s3Prefix             string
-		s3Region             string
-		s3Endpoint           string
-		s3Concurrency        int
-		s3RetryMax           int
-		maxUpload            int64
-		authUser             string
-		authPass             string
-		logFormat            string
-		logLevel             string
-		requestTimeout       time.Duration
-		shutdownTimeout      time.Duration
-		rateLimitPerIP       float64
-		rateLimitGlobal      float64
-		memCacheSize         int64
-		memCacheMaxEntry     int64
-		asyncS3Upload        bool
-		asyncS3QueueSize     int
-		asyncS3Workers       int
-		asyncS3MaxRetry      int
+		showVersion            bool
+		listenAddr             string
+		debugListenAddr        string
+		storageType            string
+		cacheDir               string
+		s3Bucket               string
+		s3Prefix               string
+		s3Region               string
+		s3Endpoint             string
+		s3Concurrency          int
+		s3RetryMax             int
+		maxUpload              int64
+		authUser               string
+		authPass               string
+		logFormat              string
+		logLevel               string
+		requestTimeout         time.Duration
+		shutdownTimeout        time.Duration
+		rateLimitPerIP         float64
+		rateLimitGlobal        float64
+		memCacheSize           int64
+		memCacheMaxEntry       int64
+		asyncS3Upload          bool
+		asyncS3QueueSize       int
+		asyncS3Workers         int
+		asyncS3MaxRetry        int
 		circuitBreakerFailures int
 		circuitBreakerTimeout  time.Duration
-		tlsCert              string
-		tlsKey               string
+		tlsCert                string
+		tlsKey                 string
 	)
 
 	localTTL, err := parseDurationWithDays(envOrDefault("LOCAL_TTL", "0"))
@@ -114,8 +202,8 @@ func run(ctx context.Context, args []string) error {
 	fs.StringVar(&authUser, "auth-username", envOrDefault("AUTH_USERNAME", ""), "HTTP Basic authentication username (disabled when empty)")
 	fs.StringVar(&authPass, "auth-password", envOrDefault("AUTH_PASSWORD", ""), "HTTP Basic authentication password (disabled when empty)")
 	// Local cache flags
-	fs.DurationVar(&localTTL, "local-ttl", localTTL, "local cache TTL based on last access time (e.g. 24h, 7d, 0=disabled)")
-	fs.DurationVar(&localCleanupInterval, "local-cleanup-interval", localCleanupInterval, "interval between local cache cleanup runs (e.g. 1h, 1d)")
+	fs.Var(daysDurationValue{target: &localTTL}, "local-ttl", "local cache TTL based on last access time (e.g. 24h, 7d, 0=disabled)")
+	fs.Var(daysDurationValue{target: &localCleanupInterval}, "local-cleanup-interval", "interval between local cache cleanup runs (e.g. 1h, 1d)")
 	// Rate limiting
 	fs.Float64Var(&rateLimitPerIP, "rate-limit-per-ip", 0, "per-IP rate limit (requests per second, 0 = disabled)")
 	fs.Float64Var(&rateLimitGlobal, "rate-limit-global", 0, "global rate limit (requests per second, 0 = disabled)")
@@ -134,56 +222,50 @@ func run(ctx context.Context, args []string) error {
 	fs.StringVar(&tlsCert, "tls-cert", envOrDefault("TLS_CERT", ""), "TLS certificate file path")
 	fs.StringVar(&tlsKey, "tls-key", envOrDefault("TLS_KEY", ""), "TLS key file path")
 
-	// Parse env vars for flags that may not be overridden by command line
-	if v := os.Getenv("S3_CONCURRENCY"); v != "" && s3Concurrency == 0 {
-		if n, err := strconv.Atoi(v); err == nil {
-			s3Concurrency = n
-		}
+	if err := parseEnvInt("S3_CONCURRENCY", &s3Concurrency); err != nil {
+		return err
 	}
-	if v := os.Getenv("MAX_UPLOAD_SIZE"); v != "" && maxUpload == 0 {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			maxUpload = n
-		}
+	if err := parseEnvInt("S3_RETRY_MAX", &s3RetryMax); err != nil {
+		return err
 	}
-	if v := os.Getenv("REQUEST_TIMEOUT"); v != "" && requestTimeout == 30*time.Second {
-		if d, err := time.ParseDuration(v); err == nil {
-			requestTimeout = d
-		}
+	if err := parseEnvInt64("MAX_UPLOAD_SIZE", &maxUpload); err != nil {
+		return err
 	}
-	if v := os.Getenv("SHUTDOWN_TIMEOUT"); v != "" && shutdownTimeout == 30*time.Second {
-		if d, err := time.ParseDuration(v); err == nil {
-			shutdownTimeout = d
-		}
+	if err := parseEnvDuration("REQUEST_TIMEOUT", &requestTimeout); err != nil {
+		return err
 	}
-	if v := os.Getenv("RATE_LIMIT_PER_IP"); v != "" && rateLimitPerIP == 0 {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			rateLimitPerIP = f
-		}
+	if err := parseEnvDuration("SHUTDOWN_TIMEOUT", &shutdownTimeout); err != nil {
+		return err
 	}
-	if v := os.Getenv("RATE_LIMIT_GLOBAL"); v != "" && rateLimitGlobal == 0 {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			rateLimitGlobal = f
-		}
+	if err := parseEnvFloat64("RATE_LIMIT_PER_IP", &rateLimitPerIP); err != nil {
+		return err
 	}
-	if v := os.Getenv("MEM_CACHE_SIZE"); v != "" && memCacheSize == 0 {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			memCacheSize = n
-		}
+	if err := parseEnvFloat64("RATE_LIMIT_GLOBAL", &rateLimitGlobal); err != nil {
+		return err
 	}
-	if v := os.Getenv("MEM_CACHE_MAX_ENTRY"); v != "" && memCacheMaxEntry == 65536 {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			memCacheMaxEntry = n
-		}
+	if err := parseEnvInt64("MEM_CACHE_SIZE", &memCacheSize); err != nil {
+		return err
 	}
-	if v := os.Getenv("CIRCUIT_BREAKER_FAILURES"); v != "" && circuitBreakerFailures == 0 {
-		if n, err := strconv.Atoi(v); err == nil {
-			circuitBreakerFailures = n
-		}
+	if err := parseEnvInt64("MEM_CACHE_MAX_ENTRY", &memCacheMaxEntry); err != nil {
+		return err
 	}
-	if v := os.Getenv("CIRCUIT_BREAKER_TIMEOUT"); v != "" && circuitBreakerTimeout == 0 {
-		if d, err := time.ParseDuration(v); err == nil {
-			circuitBreakerTimeout = d
-		}
+	if err := parseEnvBool("ASYNC_S3_UPLOAD", &asyncS3Upload); err != nil {
+		return err
+	}
+	if err := parseEnvInt("ASYNC_S3_QUEUE_SIZE", &asyncS3QueueSize); err != nil {
+		return err
+	}
+	if err := parseEnvInt("ASYNC_S3_WORKERS", &asyncS3Workers); err != nil {
+		return err
+	}
+	if err := parseEnvInt("ASYNC_S3_MAX_RETRY", &asyncS3MaxRetry); err != nil {
+		return err
+	}
+	if err := parseEnvInt("CIRCUIT_BREAKER_FAILURES", &circuitBreakerFailures); err != nil {
+		return err
+	}
+	if err := parseEnvDuration("CIRCUIT_BREAKER_TIMEOUT", &circuitBreakerTimeout); err != nil {
+		return err
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -200,6 +282,9 @@ func run(ctx context.Context, args []string) error {
 	auth, err := newAuthConfig(authUser, authPass)
 	if err != nil {
 		return err
+	}
+	if localTTL > 0 && localCleanupInterval <= 0 {
+		return fmt.Errorf("local-cleanup-interval must be greater than 0 when local-ttl is enabled")
 	}
 
 	var backend storage.Backend

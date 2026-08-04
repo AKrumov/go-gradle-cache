@@ -5,7 +5,9 @@ import (
 	"context"
 	"log/slog"
 	"math/rand"
+	"net"
 	"net/http"
+	"strings"
 	"sync"
 
 	"go_http_cache_server/metrics"
@@ -52,10 +54,10 @@ func generateID() string {
 
 // RateLimiter provides per-IP and global rate limiting.
 type RateLimiter struct {
-	global    *rate.Limiter
-	perIP     map[string]*rate.Limiter
-	mu        sync.RWMutex
-	perIPRate rate.Limit
+	global     *rate.Limiter
+	perIP      map[string]*rate.Limiter
+	mu         sync.RWMutex
+	perIPRate  rate.Limit
 	perIPBurst int
 }
 
@@ -112,7 +114,7 @@ func (rl *RateLimiter) getLimiter(ip string) *rate.Limiter {
 func RateLimit(rl *RateLimiter) func(http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			ip := r.RemoteAddr
+			ip := requestIP(r)
 			if !rl.Allow(ip) {
 				metrics.RateLimitHit()
 				slog.Warn("rate limit exceeded", "ip", ip, "path", r.URL.Path)
@@ -123,4 +125,22 @@ func RateLimit(rl *RateLimiter) func(http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 		}
 	}
+}
+
+func requestIP(r *http.Request) string {
+	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+		if idx := strings.Index(forwarded, ","); idx >= 0 {
+			forwarded = forwarded[:idx]
+		}
+		forwarded = strings.TrimSpace(forwarded)
+		if forwarded != "" {
+			return forwarded
+		}
+	}
+
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil && host != "" {
+		return host
+	}
+	return r.RemoteAddr
 }

@@ -51,7 +51,7 @@ config:
   # Local storage
   localDir: /app/cache-data
   localTTL: ""                 # e.g. "7d", "0" = disabled
-  localCleanupInterval: ""     # e.g. "1h", "1d"
+  localCleanupInterval: ""     # e.g. "1h", "1d"; must be >0 when localTTL is enabled
 
   # S3 storage
   s3Bucket: my-gradle-cache

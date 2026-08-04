@@ -96,11 +96,28 @@ func (cs *CacheServer) handleGet(w http.ResponseWriter, r *http.Request, storage
 		w.Header().Set("Content-Type", "application/octet-stream")
 		http.ServeContent(w, r, filepath.Base(storageKey), modTime, seeker)
 	} else {
+		statusCode := http.StatusOK
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Length", fmt.Sprint(size))
 		if !modTime.IsZero() {
 			w.Header().Set("Last-Modified", modTime.UTC().Format(http.TimeFormat))
 		}
+		if metaProvider, ok := file.(storage.HTTPResponseMetadata); ok {
+			meta := metaProvider.HTTPResponseMeta()
+			if meta.AcceptRanges != "" {
+				w.Header().Set("Accept-Ranges", meta.AcceptRanges)
+			}
+			if meta.ContentRange != "" {
+				w.Header().Set("Content-Range", meta.ContentRange)
+			}
+			if meta.ContentLength >= 0 {
+				w.Header().Set("Content-Length", fmt.Sprint(meta.ContentLength))
+			}
+			if meta.StatusCode != 0 {
+				statusCode = meta.StatusCode
+			}
+		}
+		w.WriteHeader(statusCode)
 		_, copyErr := storage.PooledCopy(w, file)
 		if copyErr != nil {
 			slog.Warn("error serving cache entry", "key", storageKey, "error", copyErr, "request_id", reqID)

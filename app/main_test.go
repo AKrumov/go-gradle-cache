@@ -13,6 +13,7 @@ import (
 
 	"go_http_cache_server/health"
 	"go_http_cache_server/middleware"
+	"go_http_cache_server/storage"
 )
 
 // mockBackend is a test implementation of storage.Backend.
@@ -355,12 +356,51 @@ func TestCacheServerHandleGet(t *testing.T) {
 	}
 }
 
+func TestCacheServerHandleGetRangeNonSeekable(t *testing.T) {
+	t.Parallel()
+	cs := NewCacheServer(&mockBackend{
+		getFunc: func(ctx context.Context, key string) (io.ReadCloser, int64, time.Time, bool, error) {
+			return &rangedReadCloser{
+				Reader: strings.NewReader("ell"),
+				meta: storage.HTTPResponseMeta{
+					StatusCode:    http.StatusPartialContent,
+					ContentLength: 3,
+					ContentRange:  "bytes 1-3/5",
+					AcceptRanges:  "bytes",
+				},
+			}, 3, time.Unix(1, 0), true, nil
+		},
+	}, 0)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/cache/myid/foo", nil)
+	req.Header.Set("Range", "bytes=1-3")
+	cs.handleCache(rr, req)
+
+	assertStatus(t, rr, http.StatusPartialContent)
+	assertHeader(t, rr, "Content-Length", "3")
+	assertHeader(t, rr, "Content-Range", "bytes 1-3/5")
+	assertHeader(t, rr, "Accept-Ranges", "bytes")
+	assertBody(t, rr, "ell")
+}
+
 // readCloser wraps an io.Reader without providing io.Seeker.
 type readCloser struct {
 	io.Reader
 }
 
 func (r *readCloser) Close() error { return nil }
+
+type rangedReadCloser struct {
+	io.Reader
+	meta storage.HTTPResponseMeta
+}
+
+func (r *rangedReadCloser) Close() error { return nil }
+
+func (r *rangedReadCloser) HTTPResponseMeta() storage.HTTPResponseMeta {
+	return r.meta
+}
 
 func TestCacheServerHandlePut(t *testing.T) {
 	tests := []struct {
@@ -971,4 +1011,115 @@ func TestRateLimiter(t *testing.T) {
 			t.Fatal("expected second request to be blocked")
 		}
 	})
+}
+
+func TestRateLimitUsesClientIP(t *testing.T) {
+	t.Parallel()
+	rl := middleware.NewRateLimiter(0, 0.5)
+	handler := middleware.RateLimit(rl)(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	rr1 := httptest.NewRecorder()
+	req1 := httptest.NewRequest(http.MethodGet, "/cache/myid/foo", nil)
+	req1.RemoteAddr = "127.0.0.1:1001"
+	handler(rr1, req1)
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("first request code = %d, want %d", rr1.Code, http.StatusOK)
+	}
+
+	rr2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodGet, "/cache/myid/foo", nil)
+	req2.RemoteAddr = "127.0.0.1:1002"
+	handler(rr2, req2)
+	if rr2.Code != http.StatusTooManyRequests {
+		t.Fatalf("second request code = %d, want %d", rr2.Code, http.StatusTooManyRequests)
+	}
+}
+
+func TestRunAllowsDayDurationFlags(t *testing.T) {
+	old := version
+	version = "v1.2.3"
+	defer func() { version = old }()
+
+	err := run(context.Background(), []string{
+		"-version",
+		"-local-ttl=7d",
+		"-local-cleanup-interval=1d",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunRejectsNonPositiveCleanupIntervalWhenTTLEnabled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := run(ctx, []string{
+		"-storage", "local",
+		"-dir", t.TempDir(),
+		"-local-ttl=1h",
+		"-local-cleanup-interval=0",
+	})
+	if err == nil {
+		t.Fatal("expected error for non-positive cleanup interval")
+	}
+}
+
+func TestParseEnvHelpers(t *testing.T) {
+	t.Setenv("TEST_INT", "12")
+	t.Setenv("TEST_INT64", "34")
+	t.Setenv("TEST_FLOAT64", "1.5")
+	t.Setenv("TEST_BOOL", "true")
+	t.Setenv("TEST_DURATION", "5s")
+
+	var gotInt int
+	if err := parseEnvInt("TEST_INT", &gotInt); err != nil {
+		t.Fatal(err)
+	}
+	if gotInt != 12 {
+		t.Fatalf("int = %d, want 12", gotInt)
+	}
+
+	var gotInt64 int64
+	if err := parseEnvInt64("TEST_INT64", &gotInt64); err != nil {
+		t.Fatal(err)
+	}
+	if gotInt64 != 34 {
+		t.Fatalf("int64 = %d, want 34", gotInt64)
+	}
+
+	var gotFloat float64
+	if err := parseEnvFloat64("TEST_FLOAT64", &gotFloat); err != nil {
+		t.Fatal(err)
+	}
+	if gotFloat != 1.5 {
+		t.Fatalf("float = %v, want 1.5", gotFloat)
+	}
+
+	var gotBool bool
+	if err := parseEnvBool("TEST_BOOL", &gotBool); err != nil {
+		t.Fatal(err)
+	}
+	if !gotBool {
+		t.Fatal("bool = false, want true")
+	}
+
+	var gotDuration time.Duration
+	if err := parseEnvDuration("TEST_DURATION", &gotDuration); err != nil {
+		t.Fatal(err)
+	}
+	if gotDuration != 5*time.Second {
+		t.Fatalf("duration = %v, want 5s", gotDuration)
+	}
+}
+
+func TestRunRejectsInvalidChartEnv(t *testing.T) {
+	t.Setenv("ASYNC_S3_UPLOAD", "not-bool")
+
+	err := run(context.Background(), []string{"-version"})
+	if err == nil {
+		t.Fatal("expected error for invalid ASYNC_S3_UPLOAD")
+	}
 }
